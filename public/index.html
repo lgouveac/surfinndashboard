@@ -107,6 +107,18 @@ tr:hover td { background: rgba(54,140,175,0.04); }
 .fc-logo { font-family: var(--font-heading); font-weight: 900; font-size: 13px; color: var(--accent); letter-spacing: 1px; text-transform: uppercase; display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .fc-logo span { background: var(--accent); color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; }
 
+/* Commission Filter */
+.com-filter { margin-top: 16px; background: rgba(255,255,255,0.06); border-radius: 10px; padding: 14px 18px; border: 1px solid rgba(255,255,255,0.1); }
+.com-filter h4 { font-family: var(--font-heading); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(245,242,235,0.5); margin-bottom: 10px; }
+.com-filter-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.com-filter-item { display: flex; align-items: center; gap: 5px; padding: 4px 10px; background: rgba(255,255,255,0.08); border-radius: 6px; cursor: pointer; transition: background 0.2s; }
+.com-filter-item:hover { background: rgba(255,255,255,0.14); }
+.com-filter-item input { accent-color: var(--green); cursor: pointer; }
+.com-filter-item label { font-size: 11px; color: rgba(245,242,235,0.8); cursor: pointer; white-space: nowrap; }
+.com-filter-item.unchecked { opacity: 0.4; }
+.com-filter-summary { margin-top: 10px; font-size: 11px; color: rgba(245,242,235,0.5); }
+.com-filter-summary strong { color: var(--green); }
+
 @media (max-width: 1200px) { .kpi-row { grid-template-columns: repeat(3, 1fr); } .sim-results { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 900px) { .charts-row, .charts-row-2 { grid-template-columns: 1fr; } .charts-row-3 { grid-template-columns: 1fr; } .sim-row { grid-template-columns: 1fr; } .container { padding: 16px 20px; } }
 @media (max-width: 600px) { .kpi-row { grid-template-columns: 1fr 1fr; } .sim-results { grid-template-columns: 1fr; } .header { padding: 12px 16px; } }
@@ -168,8 +180,8 @@ tr:hover td { background: rgba(54,140,175,0.04); }
       </div>
       <div class="sim-group">
         <label>Fee Flowcode (%)</label>
-        <input type="range" class="sim-slider" id="simFee" min="1" max="50" value="10" style="--accent-color:#5bb8d4;">
-        <div class="sim-value" id="simFeeValue" style="color:#5bb8d4;">10%</div>
+        <input type="range" class="sim-slider" id="simFee" min="1" max="50" value="35" style="--accent-color:#5bb8d4;">
+        <div class="sim-value" id="simFeeValue" style="color:#5bb8d4;">35%</div>
         <div style="font-size:11px;color:rgba(245,242,235,0.5);margin-top:2px;">Sobre o faturamento adicional gerado</div>
       </div>
     </div>
@@ -177,6 +189,12 @@ tr:hover td { background: rgba(54,140,175,0.04); }
     <div class="sim-divider"></div>
     <div class="fc-logo"><span>FC</span> Flowcode — Performance Fee</div>
     <div class="sim-results" id="simFcResults"></div>
+    <div class="sim-divider"></div>
+    <div class="com-filter">
+      <h4>Receitas incluidas no calculo da comissao</h4>
+      <div class="com-filter-grid" id="comFilterGrid"></div>
+      <div class="com-filter-summary" id="comFilterSummary"></div>
+    </div>
   </div>
 
   <!-- OUTROS -->
@@ -239,6 +257,8 @@ Chart.defaults.font.family = "'Open Sans', sans-serif";
 
 let charts = [];
 let dashData = {}; // store for simulator
+let globalConv = []; // store converted rows for commission recalc
+let globalMData = []; // store monthly data for recalc
 
 // ========== FILE UPLOAD ==========
 document.getElementById('fileInput').addEventListener('change', e => {
@@ -279,7 +299,8 @@ function buildDashboard(rows, isDefault) {
   const recLost = lost.reduce((s,r)=>s+r._vt,0);
   const lostCount = lost.length;
 
-  // Store for simulator
+  // Store for simulator and commission filter
+  globalConv = conv;
   dashData = { totalLeads, totalConv, convRate, recConv, ticketM, recLost, lostCount, comTotal };
 
   // KPIs
@@ -375,6 +396,10 @@ function buildDashboard(rows, isDefault) {
   document.getElementById('simConv').value = Math.round(convRate) + 10;
   document.getElementById('simConvAtual').textContent = convRate.toFixed(1) + '%';
   updateSimulator();
+
+  // Init commission filter
+  buildComFilter();
+  recalcCommission();
 }
 
 // ========== SIMULATOR ==========
@@ -387,12 +412,14 @@ function updateSimulator() {
   const d = dashData;
   if (!d.totalLeads) return;
 
+  const baseRev = d.recConvFiltered !== undefined ? d.recConvFiltered : d.recConv;
   const currentConv = d.convRate;
   const deltaConv = newConv - currentConv;
   const newConvLeads = Math.round(d.totalLeads * newConv / 100);
   const addedLeads = newConvLeads - d.totalConv;
-  const addedRev = addedLeads * d.ticketM;
-  const newTotalRev = d.recConv + addedRev;
+  const ticketFiltered = d.totalConv > 0 ? baseRev / d.totalConv : 0;
+  const addedRev = addedLeads * ticketFiltered;
+  const newTotalRev = baseRev + addedRev;
   const fcFee = addedRev * fee / 100;
   const netGain = addedRev - fcFee;
 
@@ -413,6 +440,116 @@ function updateSimulator() {
 
 document.getElementById('simConv').addEventListener('input', updateSimulator);
 document.getElementById('simFee').addEventListener('input', updateSimulator);
+
+// ========== COMMISSION FILTER ==========
+function buildComFilter() {
+  const grid = document.getElementById('comFilterGrid');
+  // Exclude Taxa/Comissao from filter (it IS the commission)
+  const filterable = COMP_DEFS.filter(c => c.col !== 'Taxa (BRL)');
+  grid.innerHTML = filterable.map(c =>
+    `<div class="com-filter-item" id="cfi_${c.label.replace(/\s/g,'_')}">
+      <input type="checkbox" id="cf_${c.label.replace(/\s/g,'_')}" checked data-col="${c.col}" data-label="${c.label}">
+      <span class="dot-sm" style="background:${c.color};display:inline-block;width:8px;height:8px;border-radius:50%;"></span>
+      <label for="cf_${c.label.replace(/\s/g,'_')}">${c.label}</label>
+    </div>`
+  ).join('');
+  grid.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      cb.closest('.com-filter-item').classList.toggle('unchecked', !cb.checked);
+      recalcCommission();
+    });
+  });
+}
+
+function getExcludedCols() {
+  const grid = document.getElementById('comFilterGrid');
+  const excluded = [];
+  grid.querySelectorAll('input[type=checkbox]:not(:checked)').forEach(cb => {
+    excluded.push(cb.dataset.col);
+  });
+  return excluded;
+}
+
+function recalcCommission() {
+  const excluded = getExcludedCols();
+  const conv = globalConv;
+  if (!conv.length) return;
+
+  // Recalc recConv: sum only included components per row
+  const includedDefs = COMP_DEFS.filter(c => !excluded.includes(c.col));
+  const recConvFiltered = conv.reduce((s, r) => {
+    return s + includedDefs.reduce((ss, c) => ss + (r['_c_' + c.label] || 0), 0);
+  }, 0);
+  const comTotal = conv.reduce((s, r) => s + r._tx, 0);
+  const pctCom = recConvFiltered > 0 ? (comTotal / recConvFiltered * 100) : 0;
+
+  // Update KPI comissao card
+  const kpiCards = document.querySelectorAll('#kpiRow .kpi-card');
+  if (kpiCards[3]) {
+    kpiCards[3].querySelector('.kpi-value').textContent = fmt(comTotal);
+    kpiCards[3].querySelector('.kpi-sub').textContent = pctCom.toFixed(1) + '% da receita' + (excluded.length > 0 ? ' (filtrada)' : '');
+  }
+  // Update receita convertida KPI
+  if (kpiCards[1]) {
+    kpiCards[1].querySelector('.kpi-value').textContent = fmt(recConvFiltered);
+    if (excluded.length > 0) {
+      kpiCards[1].querySelector('.kpi-sub').textContent = conv.filter(r=>r._vt>0).length + ' reservas (receita filtrada)';
+    } else {
+      kpiCards[1].querySelector('.kpi-sub').textContent = conv.filter(r=>r._vt>0).length + ' reservas';
+    }
+  }
+  // Update ticket medio KPI
+  const comValor = conv.filter(r=>r._vt>0);
+  const ticketFiltered = comValor.length > 0 ? recConvFiltered / comValor.length : 0;
+  if (kpiCards[2]) {
+    kpiCards[2].querySelector('.kpi-value').textContent = fmt(ticketFiltered);
+    if (excluded.length > 0) {
+      kpiCards[2].querySelector('.kpi-sub').textContent = 'Por reserva (filtrada)';
+    } else {
+      kpiCards[2].querySelector('.kpi-sub').textContent = 'Por reserva';
+    }
+  }
+
+  // Update % comissao chart
+  const comChart = charts.find(c => c.canvas && c.canvas.id === 'comissaoChart');
+  if (comChart) {
+    const monthSet = new Set(); conv.forEach(r => { if (r._mes) monthSet.add(r._mes); });
+    const sMonths = [...monthSet].sort();
+    const newPcData = sMonths.map(m => {
+      const mr = conv.filter(r => r._mes === m);
+      const rec = mr.reduce((s, r) => includedDefs.reduce((ss, c) => ss + (r['_c_' + c.label] || 0), s), 0);
+      const com = mr.reduce((s, r) => s + r._tx, 0);
+      return rec > 0 ? (com / rec * 100) : 0;
+    });
+    comChart.data.datasets[0].data = newPcData;
+    comChart.update();
+  }
+
+  // Update monthly table comissao column
+  const monthSet2 = new Set(); conv.forEach(r => { if (r._mes) monthSet2.add(r._mes); });
+  const sMonths2 = [...monthSet2].sort();
+  const mData2 = sMonths2.map(m => {
+    const mr = conv.filter(r => r._mes === m);
+    const rec = mr.reduce((s, r) => includedDefs.reduce((ss, c) => ss + (r['_c_' + c.label] || 0), s), 0);
+    const com = mr.reduce((s, r) => s + r._tx, 0);
+    return { l: monthLabel(m), leads: mr.length, rec, com, tk: mr.length > 0 ? rec / mr.length : 0, pc: rec > 0 ? (com / rec * 100) : 0 };
+  });
+  const maxR2 = Math.max(...mData2.map(d => d.rec));
+  document.getElementById('monthlyTable').innerHTML = mData2.map(d => { const p = maxR2 > 0 ? (d.rec / maxR2 * 100).toFixed(0) : 0; return `<tr><td><strong>${d.l}</strong></td><td>${d.leads}</td><td>${fmt(d.rec)}</td><td>${fmt(d.tk)}</td><td>${fmt(d.com)}</td><td><span class="badge ${d.pc >= 7 ? 'badge-gold' : 'badge-green'}">${d.pc.toFixed(1)}%</span></td><td><div class="bar-inline"><div class="bar-bg"><div class="bar-fill" style="width:${p}%;background:var(--accent)"></div></div><div class="bar-pct">${p}%</div></div></td></tr>`; }).join('');
+
+  // Update summary
+  const summary = document.getElementById('comFilterSummary');
+  if (excluded.length === 0) {
+    summary.innerHTML = 'Todas as receitas incluidas no calculo.';
+  } else {
+    summary.innerHTML = `<strong>${excluded.length}</strong> tipo(s) excluido(s) — Comissao: <strong>${pctCom.toFixed(1)}%</strong> sobre receita filtrada de <strong>${fmt(recConvFiltered)}</strong>`;
+  }
+
+  // Update dashData for simulator
+  dashData.recConvFiltered = recConvFiltered;
+  dashData.comTotal = comTotal;
+  updateSimulator();
+}
 
 // ========== INIT ==========
 initFromDefault();
